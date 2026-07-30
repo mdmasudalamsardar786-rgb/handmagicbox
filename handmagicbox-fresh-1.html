@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Hand Magic — Md Masud Alam Sardar</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; background: #000;
+    overflow: hidden; font-family: 'Segoe UI', Arial, sans-serif;
+  }
+  #video {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    object-fit: cover; transform: scaleX(-1); z-index: 0; filter: brightness(0.55) saturate(1.1);
+  }
+  #three-canvas {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    z-index: 1; pointer-events: none;
+  }
+  #vignette {
+    position: fixed; inset: 0; z-index: 2; pointer-events: none;
+    background: radial-gradient(ellipse at center, rgba(0,0,0,0) 55%, rgba(0,0,0,0.65) 100%);
+  }
+  #status {
+    position: fixed; top: 16px; left: 16px; right: 16px; z-index: 6;
+    color: #eafff5; font-size: 13px; text-align: center;
+    background: rgba(10,20,18,0.45); backdrop-filter: blur(6px);
+    padding: 10px 14px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.12);
+  }
+  #credit {
+    position: fixed; bottom: 14px; left: 0; right: 0; z-index: 6;
+    text-align: center; font-size: 11px; letter-spacing: 1.5px;
+    color: rgba(255,255,255,0.55);
+  }
+  #credit b { color: rgba(180,255,225,0.85); }
+  #startScreen {
+    position: fixed; inset: 0; z-index: 10;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: radial-gradient(circle at 50% 30%, #062821 0%, #01100c 70%, #000 100%);
+    text-align: center; padding: 24px;
+  }
+  #startScreen h1 {
+    color: #eafff5; font-size: 32px; font-weight: 600; margin: 0 0 6px;
+    letter-spacing: 1px;
+  }
+  #startScreen p.tag {
+    color: #8fffe0; font-size: 13px; margin: 0 0 32px; letter-spacing: 2px; text-transform: uppercase;
+  }
+  #startBtn {
+    padding: 16px 40px; font-size: 16px; font-weight: 600; border: none;
+    border-radius: 999px; cursor: pointer; letter-spacing: 1px;
+    background: linear-gradient(135deg, #00e28a, #00b56d);
+    color: #032418; box-shadow: 0 8px 30px rgba(0,226,138,0.35);
+  }
+  #startScreen .madeby {
+    margin-top: 40px; color: rgba(255,255,255,0.4); font-size: 11px; letter-spacing: 1.5px;
+  }
+  #startScreen .madeby b { color: rgba(150,255,210,0.7); }
+</style>
+</head>
+<body>
+
+<div id="startScreen">
+  <h1>✋ Hand Magic</h1>
+  <p class="tag">Point &middot; Open &middot; Pinch</p>
+  <button id="startBtn">Enable Camera & Begin</button>
+  <div class="madeby">Crafted by <b>Md Masud Alam Sardar</b> · mmalam.in</div>
+</div>
+
+<video id="video" autoplay playsinline muted></video>
+<canvas id="three-canvas"></canvas>
+<div id="vignette"></div>
+<div id="status" style="display:none;">Loading…</div>
+<div id="credit" style="display:none;">✨ HAND MAGIC &nbsp;·&nbsp; BY <b>MD MASUD ALAM SARDAR</b></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<script>
+const video = document.getElementById('video');
+const statusEl = document.getElementById('status');
+const startScreen = document.getElementById('startScreen');
+const startBtn = document.getElementById('startBtn');
+const creditEl = document.getElementById('credit');
+
+// ---------------- three.js base ----------------
+const canvas3d = document.getElementById('three-canvas');
+const renderer = new THREE.WebGLRenderer({ canvas: canvas3d, alpha: true, antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.z = 5;
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ---------------- ambient background particles (always drifting) ----------------
+const AMBIENT_COUNT = 140;
+const ambientGeo = new THREE.BufferGeometry();
+const ambientPos = new Float32Array(AMBIENT_COUNT * 3);
+for (let i = 0; i < AMBIENT_COUNT; i++) {
+  ambientPos[i*3]   = (Math.random() - 0.5) * 10;
+  ambientPos[i*3+1] = (Math.random() - 0.5) * 6;
+  ambientPos[i*3+2] = (Math.random() - 0.5) * 4;
+}
+ambientGeo.setAttribute('position', new THREE.BufferAttribute(ambientPos, 3));
+const ambientMat = new THREE.PointsMaterial({ color: 0x66ffcc, size: 0.02, transparent: true, opacity: 0.35 });
+const ambientPoints = new THREE.Points(ambientGeo, ambientMat);
+scene.add(ambientPoints);
+
+// ---------------- neon wireframe box (pointing gesture) ----------------
+const boxGeo = new THREE.BoxGeometry(1, 1, 1);
+const boxEdges = new THREE.EdgesGeometry(boxGeo);
+const boxMat = new THREE.LineBasicMaterial({ color: 0x00ffc8, transparent: true, opacity: 0.95 });
+const box = new THREE.LineSegments(boxEdges, boxMat);
+box.visible = false;
+scene.add(box);
+
+// glow shell (extra outer box for bloom feel)
+const glowMat = new THREE.LineBasicMaterial({ color: 0x00ffc8, transparent: true, opacity: 0.25 });
+const glowBox = new THREE.LineSegments(boxEdges.clone(), glowMat);
+glowBox.scale.set(1.12, 1.12, 1.12);
+box.add(glowBox);
+
+// ---------------- particle burst system (open palm / pinch) ----------------
+function makeGlowTexture(emoji) {
+  const c = document.createElement('canvas');
+  c.width = 96; c.height = 96;
+  const ctx = c.getContext('2d');
+  ctx.font = '64px serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(emoji, 48, 52);
+  return new THREE.CanvasTexture(c);
+}
+const glyphs = ['🌸', '✨', '💫', '🌟'];
+const glyphTextures = glyphs.map(makeGlowTexture);
+
+let particles = [];
+function spawnParticle(center, spread, kind) {
+  const tex = glyphTextures[Math.floor(Math.random() * glyphTextures.length)];
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, blending: THREE.AdditiveBlending });
+  const sprite = new THREE.Sprite(mat);
+  const size = 0.22 + Math.random() * 0.18;
+  sprite.scale.set(size, size, size);
+  sprite.position.set(
+    center.x + (Math.random() - 0.5) * spread,
+    center.y + (Math.random() - 0.5) * spread,
+    center.z + (Math.random() - 0.5) * spread * 0.6
+  );
+  sprite.userData = {
+    vx: (Math.random() - 0.5) * (kind === 'burst' ? 0.06 : 0.005),
+    vy: (kind === 'burst' ? (Math.random() - 0.5) * 0.06 : 0.003 + Math.random() * 0.004),
+    vz: (Math.random() - 0.5) * 0.02,
+    spin: (Math.random() - 0.5) * 0.05,
+    life: 1
+  };
+  scene.add(sprite);
+  particles.push(sprite);
+}
+
+function spawnBurst(center) {
+  for (let i = 0; i < 26; i++) spawnParticle(center, 0.15, 'burst');
+}
+
+// ---------------- coordinate mapping ----------------
+function toWorld(nx, ny, z = 0) {
+  const mirroredX = 1 - nx;
+  const vx = (mirroredX - 0.5) * 2;
+  const vy = -(ny - 0.5) * 2;
+  const vFOV = camera.fov * Math.PI / 180;
+  const heightAtZ = 2 * Math.tan(vFOV / 2) * (camera.position.z - z);
+  const widthAtZ = heightAtZ * camera.aspect;
+  return new THREE.Vector3(vx * widthAtZ / 2, vy * heightAtZ / 2, z);
+}
+function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y, (a.z||0) - (b.z||0)); }
+
+// ---------------- gesture detection ----------------
+function isPointing(lm) {
+  const indexExt = dist(lm[8], lm[0]) > dist(lm[6], lm[0]) * 1.15;
+  const middleCurl = dist(lm[12], lm[0]) < dist(lm[10], lm[0]) * 1.05;
+  const ringCurl = dist(lm[16], lm[0]) < dist(lm[14], lm[0]) * 1.05;
+  const pinkyCurl = dist(lm[20], lm[0]) < dist(lm[18], lm[0]) * 1.05;
+  return indexExt && middleCurl && ringCurl && pinkyCurl;
+}
+function isOpenPalm(lm) {
+  const tips = [8, 12, 16, 20];
+  return tips.every(i => dist(lm[i], lm[0]) > dist(lm[i - 2], lm[0]) * 1.1);
+}
+function isPinch(lm) {
+  return dist(lm[4], lm[8]) < 0.045;
+}
+
+function isFist(lm) {
+  const curl = i => dist(lm[i], lm[0]) < dist(lm[i - 2], lm[0]) * 1.05;
+  return curl(8) && curl(12) && curl(16) && curl(20);
+}
+
+let boxCenter = new THREE.Vector3(0, 0, 0);
+let boxTargetScale = 0;
+let spawnCooldown = 0;
+let pinchBurstCooldown = 0;
+let hue = 0;
+
+// --- realism / stability state ---
+let boxLocked = false;
+let lockedPos = new THREE.Vector3();
+let pinchConfirm = 0;
+let fistConfirm = 0;
+let lockCooldown = 0;
+const CONFIRM_FRAMES = 7;   // how many consecutive frames a gesture must hold before it "counts" (kills flicker)
+const COOLDOWN_FRAMES = 24; // pause after lock/unlock so the same gesture can't instantly re-trigger
+
+function onResults(results) {
+  const hands = results.multiHandLandmarks || [];
+  let pointingHand = null;
+  let palmPresent = false;
+  let pinchPresent = false;
+  let fistPresent = false;
+
+  hands.forEach(lm => {
+    if (isPinch(lm)) pinchPresent = true;
+    else if (isPointing(lm)) pointingHand = lm;
+    else if (isOpenPalm(lm)) palmPresent = true;
+    else if (isFist(lm)) fistPresent = true;
+  });
+
+  if (lockCooldown > 0) lockCooldown--;
+
+  if (!boxLocked) {
+    // ---- aiming phase: ghost box follows the pointing finger ----
+    if (pointingHand) {
+      const tip = pointingHand[8];
+      const target = toWorld(tip.x, tip.y, 0);
+      boxCenter.lerp(target, 0.3);
+      box.position.copy(boxCenter);
+      box.visible = true;
+      boxTargetScale = 1.4;
+      boxMat.opacity = 0.35;
+      glowMat.opacity = 0.12;
+    } else if (!pinchPresent) {
+      boxTargetScale = 0;
+    }
+
+    // ---- confirm pinch with hysteresis so it doesn't flicker ----
+    if (pinchPresent && lockCooldown === 0) {
+      pinchConfirm++;
+    } else {
+      pinchConfirm = 0;
+    }
+
+    if (pinchConfirm >= CONFIRM_FRAMES) {
+      boxLocked = true;
+      lockedPos.copy(boxCenter);
+      box.position.copy(lockedPos);
+      boxMat.opacity = 0.95;
+      glowMat.opacity = 0.28;
+      boxTargetScale = 1.7;
+      lockCooldown = COOLDOWN_FRAMES;
+      pinchConfirm = 0;
+      statusEl.textContent = '📦 Box locked in place!';
+    } else if (pinchPresent) {
+      const dots = '.'.repeat(pinchConfirm % 4);
+      statusEl.textContent = `🤏 Hold the pinch to lock the box${dots}`;
+    } else if (pointingHand) {
+      statusEl.textContent = '🎯 Aiming — now pinch and hold to lock it in place';
+    } else {
+      statusEl.textContent = '👉 Point to aim the box, then 🤏 pinch and hold to lock it';
+    }
+  } else {
+    // ---- locked phase: box stays put no matter where hands go ----
+    box.visible = true;
+    box.position.copy(lockedPos);
+
+    if (palmPresent) {
+      spawnCooldown -= 1;
+      if (spawnCooldown <= 0) {
+        spawnParticle(lockedPos, 0.9, 'float');
+        spawnCooldown = 3;
+      }
+    }
+
+    if (pinchPresent) {
+      pinchBurstCooldown -= 1;
+      if (pinchBurstCooldown <= 0) {
+        spawnBurst(lockedPos);
+        pinchBurstCooldown = 18;
+      }
+    }
+
+    if (fistPresent && lockCooldown === 0) {
+      fistConfirm++;
+    } else {
+      fistConfirm = 0;
+    }
+
+    if (fistConfirm >= CONFIRM_FRAMES) {
+      boxLocked = false;
+      boxTargetScale = 0;
+      lockCooldown = COOLDOWN_FRAMES;
+      fistConfirm = 0;
+      statusEl.textContent = '💨 Box dismissed — point to aim a new one';
+    } else if (fistPresent) {
+      statusEl.textContent = `✊ Hold the fist to dismiss${'.'.repeat(fistConfirm % 4)}`;
+    } else {
+      statusEl.textContent = '📦 Box locked · ✋ open palm = particles · 🤏 pinch = burst · ✊ hold fist = dismiss';
+    }
+  }
+}
+
+// ---------------- animation loop ----------------
+let lastScale = 0.001;
+function animate() {
+  requestAnimationFrame(animate);
+
+  hue = (hue + 0.4) % 360;
+  const col = new THREE.Color(`hsl(${hue}, 100%, 60%)`);
+  boxMat.color = col;
+  glowMat.color = col;
+
+  lastScale += (boxTargetScale - lastScale) * 0.15;
+  const s = Math.max(lastScale, 0.001);
+  box.scale.set(s, s, s);
+  box.rotation.y += 0.015;
+  box.rotation.x = Math.sin(Date.now() * 0.0006) * 0.15;
+
+  ambientPoints.rotation.y += 0.0006;
+
+  particles.forEach(p => {
+    p.position.x += p.userData.vx;
+    p.position.y += p.userData.vy;
+    p.position.z += p.userData.vz;
+    p.material.rotation += p.userData.spin;
+    p.userData.life -= 0.012;
+    p.material.opacity = Math.max(p.userData.life, 0);
+  });
+  particles = particles.filter(p => {
+    if (p.userData.life <= 0) { scene.remove(p); return false; }
+    return true;
+  });
+
+  renderer.render(scene, camera);
+}
+animate();
+
+// ---------------- MediaPipe setup ----------------
+let handsModel, cameraUtil;
+
+function startTracking() {
+  startScreen.style.display = 'none';
+  statusEl.style.display = 'block';
+  creditEl.style.display = 'block';
+  statusEl.textContent = 'Requesting camera permission…';
+
+  handsModel = new Hands({
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+  });
+  handsModel.setOptions({
+    maxNumHands: 2,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.6,
+    minTrackingConfidence: 0.6
+  });
+  handsModel.onResults(onResults);
+
+  cameraUtil = new Camera(video, {
+    onFrame: async () => { await handsModel.send({ image: video }); },
+    width: 640,
+    height: 480
+  });
+  cameraUtil.start()
+    .then(() => { statusEl.textContent = '👉 Point a finger to summon the box · ✋ open palm = particles · 🤏 pinch = burst'; })
+    .catch(err => { statusEl.textContent = 'Camera error: ' + err.message; });
+}
+
+startBtn.addEventListener('click', startTracking);
+</script>
+</body>
+</html>
